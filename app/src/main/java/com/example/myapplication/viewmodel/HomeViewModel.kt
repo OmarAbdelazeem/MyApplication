@@ -2,105 +2,199 @@ package com.example.myapplication.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.myapplication.data.remote.NewsApiClient
+import com.example.myapplication.data.repository.NewsRepository
 import com.example.myapplication.model.Article
 import com.example.myapplication.model.Category
-import com.example.myapplication.model.NewsSource
+import com.example.myapplication.util.AppLogger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class HomeViewModel : ViewModel() {
-    
-    private val _selectedCategory = MutableStateFlow(Category.ALL)
-    val selectedCategory: StateFlow<Category> = _selectedCategory.asStateFlow()
-    
+data class HomeUiState(
+    val isInitialLoading: Boolean = true,
+    val trendingArticles: List<Article> = emptyList(),
+    val latestArticles: List<Article> = emptyList(),
+    val selectedCategory: Category = Category.ALL,
+    val categoryArticles: List<Article> = emptyList(),
+    val isCategoryLoading: Boolean = false,
+    val errorMessage: String? = null,
+    val categoryError: String? = null
+) {
+    val trendingArticle: Article? get() = trendingArticles.firstOrNull()
+}
+
+class HomeViewModel(
+    private val repository: NewsRepository = NewsRepository(NewsApiClient.createService())
+) : ViewModel() {
+
+    companion object {
+        private const val TAG = "HomeViewModel"
+    }
+
+    private val _uiState = MutableStateFlow(HomeUiState())
+    val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-    
-    private val _trendingArticle = MutableStateFlow<Article?>(null)
-    val trendingArticle: StateFlow<Article?> = _trendingArticle.asStateFlow()
-    
-    private val _latestArticles = MutableStateFlow<List<Article>>(emptyList())
-    val latestArticles: StateFlow<List<Article>> = _latestArticles.asStateFlow()
-    
+
+    private val categoryCache = mutableMapOf<Category, List<Article>>()
+
+    private val trendingRequest = CategoryRequest(categoryParam = "general")
+
     init {
-        loadMockData()
+        refreshHome()
     }
-    
-    private fun loadMockData() {
+
+    fun refreshHome() {
         viewModelScope.launch {
-            // Mock trending article
-            _trendingArticle.value = Article(
-                id = "1",
-                title = "Russian warship: Moskva sinks in Black Sea",
-                category = "Europe",
-                source = NewsSource(id = "bbc", name = "BBC News", logoUrl = ""),
-                imageUrl = "https://images.unsplash.com/photo-1544552866-e04334b918c8?w=800",
-                timeAgo = "4h ago",
-                description = "The flagship of Russia's Black Sea fleet has sunk, Moscow says."
-            )
-            
-            // Mock latest articles
-            _latestArticles.value = listOf(
-                Article(
-                    id = "2",
-                    title = "Ukraine's President Zelensky to BBC: Blood money being paid...",
-                    category = "Europe",
-                    source = NewsSource(id = "bbc", name = "BBC News", logoUrl = ""),
-                    imageUrl = "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400",
-                    timeAgo = "14m ago"
-                ),
-                Article(
-                    id = "3",
-                    title = "Her train broke down. Her phone died. And then she met her...",
-                    category = "Travel",
-                    source = NewsSource(id = "cnn", name = "CNN", logoUrl = ""),
-                    imageUrl = "https://images.unsplash.com/photo-1511285560929-80b456fea0bc?w=400",
-                    timeAgo = "2h ago"
-                ),
-                Article(
-                    id = "4",
-                    title = "New breakthrough in renewable energy research",
-                    category = "Science",
-                    source = NewsSource(id = "bbc", name = "BBC News", logoUrl = ""),
-                    imageUrl = "https://images.unsplash.com/photo-1466611653911-95081537e5b7?w=400",
-                    timeAgo = "5h ago"
-                ),
-                Article(
-                    id = "5",
-                    title = "Market reaches new all-time high",
-                    category = "Business",
-                    source = NewsSource(id = "cnn", name = "CNN", logoUrl = ""),
-                    imageUrl = "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400",
-                    timeAgo = "1h ago"
+            _uiState.update { it.copy(isInitialLoading = true, errorMessage = null) }
+            try {
+                AppLogger.d(TAG, "Refreshing home feed")
+                val trending = repository.getTrending(
+                    pageSize = 6,
+                    category = trendingRequest.categoryParam,
+                    query = trendingRequest.query
                 )
-            )
+                val latest = repository.getLatest(pageSize = 20)
+                AppLogger.d(TAG, "Trending loaded: ${trending.size} items, latest: ${latest.size} items")
+
+                categoryCache[Category.ALL] = latest
+
+                _uiState.update {
+                    it.copy(
+                        isInitialLoading = false,
+                        trendingArticles = trending,
+                        latestArticles = latest,
+                        selectedCategory = Category.ALL,
+                        categoryArticles = latest,
+                        errorMessage = null,
+                        categoryError = null,
+                        isCategoryLoading = false
+                    )
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Failed to refresh home", e)
+                _uiState.update {
+                    it.copy(
+                        isInitialLoading = false,
+                        errorMessage = e.message ?: "Failed to load news"
+                    )
+                }
+            }
         }
     }
-    
+
     fun selectCategory(category: Category) {
-        _selectedCategory.value = category
-        filterArticles()
+        val current = _uiState.value.selectedCategory
+        if (category != current) {
+            _uiState.update { it.copy(selectedCategory = category, categoryError = null) }
+        }
+
+        if (category == Category.ALL) {
+            val articles = categoryCache[Category.ALL].orEmpty()
+            _uiState.update { it.copy(categoryArticles = articles, isCategoryLoading = false, categoryError = null) }
+            return
+        }
+
+        if (categoryCache.containsKey(category) && category == current) {
+            _uiState.update { it.copy(categoryArticles = categoryCache[category].orEmpty(), isCategoryLoading = false) }
+            return
+        }
+
+        if (!categoryCache.containsKey(category)) {
+            loadCategory(category)
+        } else {
+            _uiState.update { it.copy(categoryArticles = categoryCache[category].orEmpty(), isCategoryLoading = false) }
+        }
     }
-    
+
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
-        filterArticles()
     }
-    
-    private fun filterArticles() {
-        val category = _selectedCategory.value
-        val query = _searchQuery.value.lowercase()
-        
-        // In a real app, this would filter from a larger dataset
-        val filtered = _latestArticles.value.filter { article ->
-            (category == Category.ALL || article.category == category.displayName) &&
-            (query.isEmpty() || article.title.lowercase().contains(query))
+
+    fun retrySelectedCategory() {
+        val category = _uiState.value.selectedCategory
+        if (category == Category.ALL) {
+            val articles = categoryCache[Category.ALL].orEmpty()
+            _uiState.update {
+                it.copy(
+                    categoryArticles = articles,
+                    categoryError = null,
+                    isCategoryLoading = false
+                )
+            }
+        } else {
+            loadCategory(category, forceRefresh = true)
         }
-        
-        // For demo, we keep showing all articles
-        // In production, you'd update _latestArticles with filtered results
+    }
+
+    private fun loadCategory(category: Category, forceRefresh: Boolean = false) {
+        val request = category.toRequest()
+        if (!forceRefresh && categoryCache.containsKey(category)) {
+            _uiState.update {
+                it.copy(
+                    categoryArticles = categoryCache[category].orEmpty(),
+                    isCategoryLoading = false,
+                    categoryError = null
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isCategoryLoading = true, categoryError = null) }
+            try {
+                AppLogger.d(TAG, "Loading category ${category.name}")
+                val articles = repository.getByCategory(
+                    category = request.categoryParam,
+                    query = request.query,
+                    pageSize = 20
+                )
+                AppLogger.d(TAG, "Category ${category.name} loaded with ${articles.size} articles")
+                categoryCache[category] = articles
+                // Ensure currently selected category matches to avoid overwriting outdated selection
+                _uiState.update {
+                    if (it.selectedCategory == category) {
+                        it.copy(
+                            categoryArticles = articles,
+                            isCategoryLoading = false,
+                            categoryError = null
+                        )
+                    } else {
+                        it.copy(isCategoryLoading = false)
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Failed to load category ${category.name}", e)
+                _uiState.update {
+                    if (it.selectedCategory == category) {
+                        it.copy(
+                            isCategoryLoading = false,
+                            categoryError = e.message ?: "Failed to load category"
+                        )
+                    } else {
+                        it.copy(isCategoryLoading = false)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun Category.toRequest(): CategoryRequest = when (this) {
+        Category.ALL -> CategoryRequest()
+        Category.SPORTS -> CategoryRequest(categoryParam = "sports")
+        Category.POLITICS -> CategoryRequest(query = "politics")
+        Category.BUSINESS -> CategoryRequest(categoryParam = "business")
+        Category.HEALTH -> CategoryRequest(categoryParam = "health")
+        Category.TRAVEL -> CategoryRequest(query = "travel")
+        Category.SCIENCE -> CategoryRequest(categoryParam = "science")
+        Category.EUROPE -> CategoryRequest(query = "europe")
     }
 }
 
+private data class CategoryRequest(
+    val categoryParam: String? = null,
+    val query: String? = null
+)

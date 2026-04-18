@@ -28,7 +28,7 @@ sealed class BottomNavItem(
     object Home : BottomNavItem("home", "Home", Icons.Default.Home)
     object Explore : BottomNavItem("explore", "Explore", Icons.Default.Explore)
     object Bookmark : BottomNavItem("bookmark", "Bookmark", Icons.Default.Bookmark)
-    object Profile : BottomNavItem("profile", "Profile", Icons.Default.Person)
+//    object Profile : BottomNavItem("profile", "Profile", Icons.Default.Person)
 }
 
 @Composable
@@ -41,7 +41,7 @@ fun BottomNavigationBar(
         BottomNavItem.Home,
         BottomNavItem.Explore,
         BottomNavItem.Bookmark,
-        BottomNavItem.Profile
+//        BottomNavItem.Profile
     )
     
     NavigationBar(
